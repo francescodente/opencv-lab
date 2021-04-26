@@ -3,6 +3,7 @@
 #include <string>
 #include <ctime>
 #include <cstdio>
+#include <fstream>
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/utility.hpp>
@@ -11,6 +12,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
+#include "utils.hpp"
 
 using namespace cv;
 using namespace std;
@@ -244,13 +246,16 @@ static inline void read(const FileNode& node, Settings& x, const Settings& defau
 enum { DETECTION = 0, CAPTURING = 1, CALIBRATED = 2 };
 
 static Mat mask;
+static vector<Point2f> points = vector<Point2f>();
 
 static void onMouse(int event, int x, int y, int, void*)
 {
     static Point2f* startLine = NULL;
     if (event == EVENT_LBUTTONDBLCLK)
     {
-        circle(mask, Point2f(x, y), 2, Scalar(0, 255, 255), 2);
+        Point2f p(x, y);
+        circle(mask, p, 2, Scalar(0, 255, 255), 2);
+        points.push_back(p);
     }
     else if (event == EVENT_LBUTTONDOWN)
     {
@@ -329,14 +334,13 @@ int main(int argc, char* argv[])
         release_object = true;
     }
 
-    vector<vector<Point2f> > imagePoints;
+    vector<vector<Point2f>> imagePoints;
     Mat cameraMatrix, distCoeffs;
     Size imageSize;
     int mode = s.inputType == Settings::IMAGE_LIST ? CAPTURING : DETECTION;
     clock_t prevTimestamp = 0;
     const Scalar RED(0,0,255), GREEN(0,255,0);
     const char ESC_KEY = 27;
-    const char SAVE_SCREEN_KEY = 's';
 
     Mat n = s.nextImage();
     mask = Mat(n.size(), n.type(), Scalar(0, 0, 0));
@@ -467,42 +471,20 @@ int main(int argc, char* argv[])
         //! [await_input]
         copyTo(mask, view, mask);
         imshow("Image View", view);
+        //imshow("Image View2", view);
         char key = (char)waitKey(s.inputCapture.isOpened() ? 50 : s.delay);
 
-        if( key  == ESC_KEY )
+        add_key_handler(key, view, &points, &mask);
+
+        if (key == ESC_KEY) 
+        {
             break;
-
-        if (key == SAVE_SCREEN_KEY) {
-            time_t rawtime;
-            struct tm* timeinfo;
-            char buffer[80];
-
-            time(&rawtime);
-            timeinfo = localtime(&rawtime);
-
-            strftime(buffer, sizeof(buffer), "%d-%m-%Y_%H-%M-%S", timeinfo);
-            std::string time(buffer);
-            std::string filename = "screenshot_" + time + ".jpg";
-            puts(filename.c_str());
-            bool result = false;
-            try
-            {
-                result = imwrite(filename.c_str(), view);
-            }
-            catch (const cv::Exception& ex)
-            {
-                fprintf(stderr, "Exception converting image to PNG format: %s\n", ex.what());
-            }
-            if (result)
-                printf("Saved PNG file with alpha data.\n");
-            else
-                printf("ERROR: Can't save PNG file.\n");
         }
-
-        if( key == 'u' && mode == CALIBRATED )
-           s.showUndistorsed = !s.showUndistorsed;
-
-        if( s.inputCapture.isOpened() && key == 'g' )
+        else if (key == 'u' && mode == CALIBRATED)
+        {
+            s.showUndistorsed = !s.showUndistorsed;
+        }
+        else if( s.inputCapture.isOpened() && key == 'g' )
         {
             mode = CAPTURING;
             imagePoints.clear();
