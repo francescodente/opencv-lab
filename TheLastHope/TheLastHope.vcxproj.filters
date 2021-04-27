@@ -26,10 +26,13 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Xml Include="in_VID5.xml">
+    <Xml Include="VID5.xml">
       <Filter>Resource Files</Filter>
     </Xml>
-    <Xml Include="VID5.xml">
+    <Xml Include="Settings.xml">
+      <Filter>Resource Files</Filter>
+    </Xml>
+    <Xml Include="out_camera_data.xml">
       <Filter>Resource Files</Filter>
     </Xml>
   </ItemGroup>
@@ -39,13 +42,8 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="point.txt">
-      <Filter>Resource Files</Filter>
-    </Text>
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="utils.hpp">
-      <Filter>Source Files</Filter>
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -12,6 +12,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/core/utils/filesystem.hpp>
 #include "utils.hpp"
 
 using namespace cv;
@@ -40,6 +41,8 @@ public:
                   << "Write_extrinsicParameters"   << writeExtrinsics
                   << "Write_gridPoints" << writeGrid
                   << "Write_outputFileName"  << outputFileName
+                  << "Write_imgOutputFolder" << imgOutputDirectory
+                  << "Write_xmlOutputFolder" << xmlOutputDirectory
 
                   << "Show_UndistortedImage" << showUndistorsed
 
@@ -60,6 +63,8 @@ public:
         node["Write_extrinsicParameters"] >> writeExtrinsics;
         node["Write_gridPoints"] >> writeGrid;
         node["Write_outputFileName"] >> outputFileName;
+        node["Write_imgOutputFolder"] >> imgOutputDirectory;
+        node["Write_xmlOutputFolder"] >> xmlOutputDirectory;
         node["Calibrate_AssumeZeroTangentialDistortion"] >> calibZeroTangentDist;
         node["Calibrate_FixPrincipalPointAtTheCenter"] >> calibFixPrincipalPoint;
         node["Calibrate_UseFisheyeModel"] >> useFisheye;
@@ -212,6 +217,8 @@ public:
     bool calibFixPrincipalPoint; // Fix the principal point at the center
     bool flipVertical;           // Flip the captured images around the horizontal axis
     string outputFileName;       // The name of the file where to write
+    string xmlOutputDirectory;   // The name of the file where to write
+    string imgOutputDirectory;   // The name of the file where to write
     bool showUndistorsed;        // Show undistorted images after calibration
     string input;                // The input ->
     bool useFisheye;             // use fisheye camera model for calibration
@@ -247,6 +254,7 @@ enum { DETECTION = 0, CAPTURING = 1, CALIBRATED = 2 };
 
 static Mat mask;
 static vector<Point2f> points = vector<Point2f>();
+bool clicked = false;
 
 static void onMouse(int event, int x, int y, int, void*)
 {
@@ -344,8 +352,9 @@ int main(int argc, char* argv[])
 
     Mat n = s.nextImage();
     mask = Mat(n.size(), n.type(), Scalar(0, 0, 0));
-    namedWindow("Image View", 0);
-    setMouseCallback( "Image View", onMouse, 0 );
+    const char winName[] = "Image View";
+    namedWindow(winName, WINDOW_KEEPRATIO);
+    setMouseCallback(winName, onMouse, 0 );
 
     //! [get_input]
     for(;;)
@@ -376,7 +385,9 @@ int main(int argc, char* argv[])
 
         imageSize = view.size();  // Format input image.
         if( s.flipVertical )    flip( view, view, 0 );
-        flip(view, view, 1);
+        flip(view, view, 1); // mirror effect
+
+        Mat raw_view = view.clone();
 
         //! [find_pattern]
         vector<Point2f> pointBuf;
@@ -418,16 +429,20 @@ int main(int argc, char* argv[])
                         Size(-1,-1), TermCriteria( TermCriteria::EPS+TermCriteria::COUNT, 30, 0.0001 ));
                 }
 
+                // Draw the corners.
+                drawChessboardCorners(view, s.boardSize, Mat(pointBuf), found);
                 if( mode == CAPTURING &&  // For camera only take new samples after delay time
-                    (!s.inputCapture.isOpened() || clock() - prevTimestamp > s.delay*1e-3*CLOCKS_PER_SEC) )
+                    (!s.inputCapture.isOpened() || /*clock() - prevTimestamp > s.delay*1e-3*CLOCKS_PER_SEC*/ clicked) )
                 {
                     imagePoints.push_back(pointBuf);
                     prevTimestamp = clock();
                     blinkOutput = s.inputCapture.isOpened();
-                }
 
-                // Draw the corners.
-                drawChessboardCorners( view, s.boardSize, Mat(pointBuf), found );
+                    if (s.inputType == Settings::InputType::CAMERA || s.inputType == Settings::InputType::VIDEO_FILE) {
+                        save_img_on_file(s.imgOutputDirectory, raw_view, "raw_");
+                        save_img_on_file(s.imgOutputDirectory, view, "corners_");
+                    }
+                }
         }
         //! [pattern_found]
         //----------------------------- Output Text ------------------------------------------------
@@ -437,6 +452,7 @@ int main(int argc, char* argv[])
         int baseLine = 0;
         Size textSize = getTextSize(msg, 1, 1, 1, &baseLine);
         Point textOrigin(view.cols - 2*textSize.width - 10, view.rows - 2*baseLine - 10);
+        clicked = false;
 
         if( mode == CAPTURING )
         {
@@ -469,12 +485,26 @@ int main(int argc, char* argv[])
         //! [output_undistorted]
         //------------------------------ Show image and check for input commands -------------------
         //! [await_input]
+        /*Mat binaryMask = Mat(mask.size(), mask.type());
+        for (size_t i = 0; i < mask.size().height; i++)
+        {
+            for (size_t j = 0; j < mask.size().width; j++)
+            {
+                Scalar s = mask.at<Scalar>(j, i);
+                if (s[0] == 0 && s[1] == 0 && s[2] == 0)
+                {
+                    binaryMask.at<Scalar>(j, i, 0) = 0;
+                }
+                else
+                {
+                    binaryMask.at<Scalar>(j, i, 0) = 255;
+                }
+            }
+        }*/
         copyTo(mask, view, mask);
-        imshow("Image View", view);
-        //imshow("Image View2", view);
+        imshow(winName, view);
         char key = (char)waitKey(s.inputCapture.isOpened() ? 50 : s.delay);
 
-        add_key_handler(key, view, &points, &mask);
 
         if (key == ESC_KEY) 
         {
@@ -488,6 +518,22 @@ int main(int argc, char* argv[])
         {
             mode = CAPTURING;
             imagePoints.clear();
+        }
+        else if (key == CAPTURE_CALIBRATION)
+        {
+            clicked = true;
+        }
+        else if (key == SAVE_SCREEN_KEY)
+        {
+            save_img_on_file(s.imgOutputDirectory, view, "view_");
+        }
+        else if (key == SAVE_FILE_KEY)
+        {
+            save_points_on_file(s.xmlOutputDirectory, points);
+        }
+        else if (key == CLEAN_ALL_KEY)
+        {
+            mask = Mat(mask.size(), mask.type(), Scalar(0, 0, 0));
         }
         //! [await_input]
     }
@@ -520,7 +566,7 @@ int main(int argc, char* argv[])
             if(view.empty())
                 continue;
             remap(view, rview, map1, map2, INTER_LINEAR);
-            imshow("Image View", rview);
+            imshow(winName, rview);
             char c = (char)waitKey();
             if( c  == ESC_KEY || c == 'q' || c == 'Q' )
                 break;
@@ -662,7 +708,11 @@ static void saveCameraParams( Settings& s, Size& imageSize, Mat& cameraMatrix, M
                               const vector<float>& reprojErrs, const vector<vector<Point2f> >& imagePoints,
                               double totalAvgErr, const vector<Point3f>& newObjPoints )
 {
-    FileStorage fs( s.outputFileName, FileStorage::WRITE );
+    if (!cv::utils::fs::exists(s.xmlOutputDirectory))
+    {
+        cv::utils::fs::createDirectory(s.xmlOutputDirectory);
+    }
+    FileStorage fs( s.xmlOutputDirectory + "/"+ s.outputFileName, FileStorage::WRITE );
 
     time_t tm;
     time( &tm );

@@ -13,6 +13,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/core/utils/filesystem.hpp>
 
 using namespace cv;
 using namespace std;
@@ -32,9 +33,9 @@ string name_file(string root_name, int id, string extension) {
 	return root_name + "_" + string(buffer_number) + "_" + string(buffer) + extension;
 }
 
-string name_img() {
+string name_img(string prefix) {
 	static int id = 0;
-	return name_file("screenshot", id++, ".png");
+	return name_file("screenshot_" + prefix, id++, ".png");
 }
 
 string name_txt() {
@@ -43,10 +44,14 @@ string name_txt() {
 }
 
 
-void save_img_on_file(Mat img) {
+void save_img_on_file(string output_folder, Mat img, string prefix) {
+	if (!cv::utils::fs::exists(output_folder))
+	{
+		cv::utils::fs::createDirectory(output_folder);
+	}
 	try
 	{
-		imwrite(name_img().c_str(), img);
+		imwrite((output_folder + "/" + name_img(prefix)).c_str(), img);
 	}
 	catch (const cv::Exception& ex)
 	{
@@ -54,8 +59,12 @@ void save_img_on_file(Mat img) {
 	}
 }
 
-void save_points_on_file(vector<Point2f> points) {
-	ofstream fout(name_txt());
+void save_points_on_file(string output_folder, vector<Point2f> points) {
+	if (!cv::utils::fs::exists(output_folder))
+	{
+		cv::utils::fs::createDirectory(output_folder);
+	}
+	ofstream fout(output_folder + "/" + name_txt());
 	try
 	{
 		for (Point2f point: points) {
@@ -67,28 +76,4 @@ void save_points_on_file(vector<Point2f> points) {
 		fprintf(stderr, "Exception converting points to file: %s\n", ex.what());
 	}
 	fout.close();
-}
-
-void add_key_handler(char key, Mat img, vector<Point2f>* points, Mat *mask) {
-	if (key == SAVE_SCREEN_KEY)
-	{
-		save_img_on_file(img);
-	}
-	else if (key == SAVE_FILE_KEY)
-	{
-		save_points_on_file(*points);
-	}
-	else if (key == CLEAN_ALL_KEY)
-	{
-		*mask = Mat(img.size(), img.type(), Scalar(0, 0, 0));
-	}
-	else if (key == CLEAN_KEY)
-	{
-		(*points).pop_back();
-		Mat working_mask(img.size(), img.type(), Scalar(0, 0, 0));
-		for (Point2f p : *points) {
-			circle(working_mask, p, 2, Scalar(0, 255, 255), 2);
-		}
-		*mask = working_mask;
-	}
 }
