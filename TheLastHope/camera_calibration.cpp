@@ -604,6 +604,7 @@ static double computeReprojectionErrors( const vector<vector<Point3f> >& objectP
 
         size_t n = objectPoints[i].size();
         perViewErrors[i] = (float) std::sqrt(err*err/n);
+        cout << "error" << i << ":" << perViewErrors[i] << endl;
         totalErr        += err*err;
         totalPoints     += n;
     }
