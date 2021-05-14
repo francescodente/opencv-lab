@@ -252,17 +252,89 @@ static inline void read(const FileNode& node, Settings& x, const Settings& defau
 
 enum { DETECTION = 0, CAPTURING = 1, CALIBRATED = 2 };
 
+static void calcBoardCornerPositions(Size boardSize, float squareSize, vector<Point3f>& corners,
+    Settings::Pattern patternType /*= Settings::CHESSBOARD*/)
+{
+    corners.clear();
+
+    switch (patternType)
+    {
+    case Settings::CHESSBOARD:
+    case Settings::CIRCLES_GRID:
+        for (int i = 0; i < boardSize.height; ++i)
+            for (int j = 0; j < boardSize.width; ++j)
+                corners.push_back(Point3f(j * squareSize, i * squareSize, 0));
+        break;
+
+    case Settings::ASYMMETRIC_CIRCLES_GRID:
+        for (int i = 0; i < boardSize.height; i++)
+            for (int j = 0; j < boardSize.width; j++)
+                corners.push_back(Point3f((2 * j + i % 2) * squareSize, i * squareSize, 0));
+        break;
+    default:
+        break;
+    }
+}
+
+//Compute Euler angles of the extrinsic rotations (tyat-bryan rep.) from a rotation matrix.
+cv::Mat rot2euler(const cv::Mat& rotationMatrix)
+{
+    cv::Mat euler(3, 1, CV_64F);
+    double m00 = rotationMatrix.at<double>(0, 0);
+    double m01 = rotationMatrix.at<double>(0, 1);
+    double m02 = rotationMatrix.at<double>(0, 2);
+    double m10 = rotationMatrix.at<double>(1, 0);
+    double m11 = rotationMatrix.at<double>(1, 1);
+    double m12 = rotationMatrix.at<double>(1, 2);
+    double m20 = rotationMatrix.at<double>(2, 0);
+    double m21 = rotationMatrix.at<double>(2, 1);
+    double m22 = rotationMatrix.at<double>(2, 2);
+    double x, y, z;
+    // Assuming the angles are in radians.
+    if (m20 < 1)
+    {
+        if (m20 > -1)
+        {
+            x = atan2(m21, m22);
+            y = asin(-m20);
+            z = atan2(m10, m00);
+        }
+        else //m20 = -1
+        {
+            //Not a unique solution: x - z = atan2(-m12,m11)
+            x = 0;
+            y = CV_PI / 2;
+            z = -atan2(-m12, m11);
+        }
+    }
+    else //m20 = +1
+    {
+        //Not a unique solution: x + z = atan2(-m12,m11)
+        x = 0;
+        y = -CV_PI / 2;
+        z = atan2(-m12, m11);
+    }
+    euler.at<double>(0) = x;
+    euler.at<double>(1) = y;
+    euler.at<double>(2) = z;
+    return euler;
+}
+
 static Mat mask;
 static vector<Point2f> points = vector<Point2f>();
 bool clicked = false;
 
-static void onMouse(int event, int x, int y, int, void*)
+static void onMouse(int event, int x, int y, int, void* clickedPoints)
 {
     static Point2f* startLine = NULL;
     if (event == EVENT_LBUTTONDBLCLK)
     {
         Point2f p(x, y);
         circle(mask, p, 2, Scalar(0, 255, 255), 2);
+        if (clickedPoints) {
+            vector<Point2f>* v_points = (vector<Point2f> *) clickedPoints;
+            v_points->push_back(p);
+        }
         points.push_back(p);
     }
     else if (event == EVENT_LBUTTONDOWN)
@@ -284,8 +356,246 @@ static void onMouse(int event, int x, int y, int, void*)
     }
 }
 
+static void onMousePoseView(int event, int x, int y, int, void*)
+{
+    
+}
+
 bool runCalibrationAndSave(Settings& s, Size imageSize, Mat&  cameraMatrix, Mat& distCoeffs,
                            vector<vector<Point2f> > imagePoints, float grid_width, bool release_object);
+
+bool isRotationMatrix(Mat& R) {
+    Mat Rt;
+    transpose(R, Rt);
+    Mat shouldBeIdentity = Rt * R;
+    Mat I = Mat::eye(3, 3, shouldBeIdentity.type());
+
+    return norm(I, shouldBeIdentity) < 1e-6;
+}
+
+void computeChessboardPose(Settings& s) {
+    std::string calibFilePath = s.outputFileName + "/out_calibration.xml";
+    calibFilePath = "xml/out_calibration.xml";
+    cout << "Opening" << calibFilePath << "...." << endl;
+
+    FileStorage fs;
+    if (!fs.open(calibFilePath, FileStorage::READ)) {
+        cerr << "Error" << calibFilePath << "...." << endl;
+        return;
+    }
+
+    int width, height;
+    Mat K, distCoeff;
+
+    fs["image_width"] >> width;
+    fs["image_height"] >> height;
+    fs["camera_matrix"] >> K;
+    fs["distorsion_coefficients"] >> distCoeff;
+
+    fs.release();
+
+    cout << "Image width = " << width << endl;
+    cout << "Image height = " << height << endl;
+    cout << "k = " << K << endl;
+    cout << "distCoeff = " << distCoeff << endl;
+
+    const char* winName = "Pose View";
+    namedWindow(winName, WINDOW_KEEPRATIO);
+
+    vector<Point2f> clickedPoints;
+    cv::setMouseCallback(winName, onMouse, &clickedPoints);
+    Mat view, undistortedView;
+    vector<Point2f> imagePoints;
+    vector<Point3f> objectPoints;
+    Mat Himg2scene, Hscene2img;
+    calcBoardCornerPositions(s.boardSize, s.squareSize, objectPoints, s.calibrationPattern);
+    
+    //! [get_input]
+    for (;;)
+    {
+        Mat view;
+        bool blinkOutput = false;
+
+        view = s.nextImage();
+        undistort(view, undistortedView,K, distCoeff);
+        Mat raw_view = view.clone();
+
+        //! [find_pattern]
+        vector<Point2f> pointBuf;
+
+        if (!s.inputCapture.isOpened())
+        {
+            cerr << "Camera is not opened, exit now!" << endl;
+            return;
+        }
+
+        bool found;
+
+        int chessBoardFlags = CALIB_CB_ADAPTIVE_THRESH | CALIB_CB_NORMALIZE_IMAGE | CALIB_CB_FAST_CHECK;
+
+        switch (s.calibrationPattern) // Find feature points on the input format
+        {
+        case Settings::CHESSBOARD:
+            found = findChessboardCorners(view, s.boardSize, pointBuf, chessBoardFlags);
+            break;
+        case Settings::CIRCLES_GRID:
+            found = findCirclesGrid(view, s.boardSize, pointBuf);
+            break;
+        case Settings::ASYMMETRIC_CIRCLES_GRID:
+            found = findCirclesGrid(view, s.boardSize, pointBuf, CALIB_CB_ASYMMETRIC_GRID);
+            break;
+        default:
+            found = false;
+            break;
+        }
+        //! [find_pattern]
+        //! [pattern_found]
+        if (found)                // If done with success,
+        {
+            // improve the found corners' coordinate accuracy for chessboard
+            if (s.calibrationPattern == Settings::CHESSBOARD)
+            {
+                Mat viewGray;
+                cvtColor(view, viewGray, COLOR_BGR2GRAY);
+                cornerSubPix(viewGray, pointBuf, Size(11, 11),
+                    Size(-1, -1), TermCriteria(TermCriteria::EPS + TermCriteria::COUNT, 30, 0.0001));
+            }
+
+            imagePoints.swap(pointBuf);
+
+            Mat rotVec, t, R;
+
+            solvePnP(objectPoints, imagePoints, K, distCoeff, rotVec, t);
+            Rodrigues(rotVec, R);
+
+            vector<Point2f> reprojImagePoints;
+            double err, rmse;
+            projectPoints(objectPoints, rotVec, t, K, distCoeff, reprojImagePoints);
+            err = norm(imagePoints, reprojImagePoints, NORM_L2);
+            size_t n = objectPoints.size();
+            rmse = std::sqrt(err * err / n);
+            cout << "RMSE of back-proj " << rmse << endl;
+
+            Mat P, Ext;
+            hconcat(R, t, Ext);
+            P = K * Ext;
+
+            hconcat(P(Range(0, 3), Range(0, 2)), P.col(3), Hscene2img);
+            Himg2scene = Hscene2img.inv();
+
+            if (clickedPoints.size() == 2) {
+                cout << clickedPoints;
+
+                vector<Point2f> warpedPoint(2);
+                perspectiveTransform(clickedPoints, warpedPoint, Himg2scene);
+                double d = norm(warpedPoint[0] - warpedPoint[1]);
+                char dist_str[200];
+
+                sprintf(dist_str, "dist_str %.3f", d);
+                putText(undistortedView, dist_str, cv::Point(width - 200, 100), cv::FONT_HERSHEY_DUPLEX, 0.5, Scalar(255, 0, 0), 1);
+
+                cout << "dist = " << d << endl;
+                clickedPoints = vector<Point2f>();
+            }
+
+            Matx31d vx = P.col(0);
+            Matx31d vy = P.col(1);
+            Matx31d vz = P.col(2);
+            Matx31d o = P.col(3);
+
+            vx(0) /= vx(2);
+            vx(1) /= vx(2);
+            vx(2) = 1.0;
+
+            vy(0) /= vy(2);
+            vy(1) /= vy(2);
+            vy(2) = 1.0;
+
+            vz(0) /= vz(2);
+            vz(1) /= vz(2);
+            vz(2) = 1.0;
+
+            o(0) /= o(2);
+            o(1) /= o(2);
+            o(2) = 1.0;
+
+            double roll, pitch, yaw;
+            roll = 0;
+            pitch = 0;
+            yaw = 0;
+            
+            if (isRotationMatrix(R)) {
+                Mat euler = rot2euler(R);
+                roll = euler.at<double>(0, 0) * 100 / CV_PI;
+                pitch = euler.at<double>(1, 0) * 100 / CV_PI;
+                yaw = euler.at<double>(2, 0) * 100 / CV_PI;
+            }
+
+            vector<Point3f> scene_axis_point;
+            vector<Point2f> projected_axis_point;
+            scene_axis_point.push_back(Point3f(3 * s.squareSize, 0, 0)); //x
+            scene_axis_point.push_back(Point3f(0, 3 * s.squareSize, 0));//y
+            scene_axis_point.push_back(Point3f(0, 0, 3 * s.squareSize));//z
+
+            projectPoints(scene_axis_point, rotVec, t, K, Mat::zeros(1, 5, CV_64FC1), projected_axis_point);
+
+            arrowedLine(undistortedView, Point2f(o(0), o(1)), projected_axis_point[0], Scalar(255, 0, 0), 2);
+            arrowedLine(undistortedView, Point2f(o(0), o(1)), projected_axis_point[1], Scalar(0, 255, 0), 2);
+            arrowedLine(undistortedView, Point2f(o(0), o(1)), projected_axis_point[2], Scalar(0, 0, 255), 2);
+
+            putText(undistortedView, "X", projected_axis_point[0], 1, 2, Scalar(255, 0, 0));
+            putText(undistortedView, "Y", projected_axis_point[1], 1, 2, Scalar(0, 255, 0));
+            putText(undistortedView, "Z", projected_axis_point[2], 1, 2, Scalar(0, 0, 255));
+
+            char roll_str[50];
+            char pitch_str[50];
+            char yaw_str[50];
+            sprintf(roll_str, "roll: %.3f deg", roll);
+            sprintf(pitch_str, "pitch: %.3f deg", pitch);
+            sprintf(yaw_str, "yaw: %.3f deg", yaw);
+
+            putText(undistortedView, roll_str, cv::Point(width - 200, 25), cv::FONT_HERSHEY_DUPLEX, 0.5, Scalar(255, 0, 0), 1);
+            putText(undistortedView, pitch_str, cv::Point(width - 200, 50), cv::FONT_HERSHEY_DUPLEX, 0.5, Scalar(0, 255, 0), 1);
+            putText(undistortedView, yaw_str, cv::Point(width - 200, 75), cv::FONT_HERSHEY_DUPLEX, 0.5, Scalar(0, 0, 255), 1);
+        }
+
+        copyTo(mask, view, mask);
+        imshow(winName, undistortedView);
+        char key = (char)waitKey(s.inputCapture.isOpened() ? 50 : s.delay);
+
+
+        if (key == 27)
+        {
+            break;
+        }
+        else if (key == 'u')
+        {
+            s.showUndistorsed = !s.showUndistorsed;
+        }
+        else if (s.inputCapture.isOpened() && key == 'g')
+        {
+            imagePoints.clear();
+        }
+        else if (key == CAPTURE_CALIBRATION)
+        {
+            clicked = true;
+        }
+        else if (key == SAVE_SCREEN_KEY)
+        {
+            save_img_on_file(s.imgOutputDirectory, view, "view_");
+        }
+        else if (key == SAVE_FILE_KEY)
+        {
+            save_points_on_file(s.xmlOutputDirectory, points);
+        }
+        else if (key == CLEAN_ALL_KEY)
+        {
+            mask = Mat(mask.size(), mask.type(), Scalar(0, 0, 0));
+        }
+        //! [await_input]
+    }
+
+};
 
 int main(int argc, char* argv[])
 {
@@ -356,6 +666,8 @@ int main(int argc, char* argv[])
     namedWindow(winName, WINDOW_KEEPRATIO);
     setMouseCallback(winName, onMouse, 0 );
 
+    computeChessboardPose(s);
+
     //! [get_input]
     for(;;)
     {
@@ -385,7 +697,7 @@ int main(int argc, char* argv[])
 
         imageSize = view.size();  // Format input image.
         if( s.flipVertical )    flip( view, view, 0 );
-        flip(view, view, 1); // mirror effect
+        //flip(view, view, 1); // mirror effect
 
         Mat raw_view = view.clone();
 
@@ -613,9 +925,9 @@ static double computeReprojectionErrors( const vector<vector<Point3f> >& objectP
 }
 //! [compute_errors]
 //! [board_corners]
-static void calcBoardCornerPositions(Size boardSize, float squareSize, vector<Point3f>& corners,
-                                     Settings::Pattern patternType /*= Settings::CHESSBOARD*/)
-{
+/*static void calcBoardCornerPositions(Size boardSize, float squareSize, vector<Point3f>& corners,
+                                     Settings::Pattern patternType /*= Settings::CHESSBOARD)*/
+/*{
     corners.clear();
 
     switch(patternType)
@@ -635,7 +947,7 @@ static void calcBoardCornerPositions(Size boardSize, float squareSize, vector<Po
     default:
         break;
     }
-}
+}*/
 //! [board_corners]
 static bool runCalibration( Settings& s, Size& imageSize, Mat& cameraMatrix, Mat& distCoeffs,
                             vector<vector<Point2f> > imagePoints, vector<Mat>& rvecs, vector<Mat>& tvecs,
