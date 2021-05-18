@@ -187,7 +187,7 @@ int main( int argc, char** argv )
         }
 
         needToInit = false;
-        imshow(name, image);
+        cv::imshow(name, image);
 
         char c = (char)waitKey(10);
         if( c == 27 )
