@@ -95,12 +95,17 @@ int main( int argc, char** argv )
     Mat gray, prevGray, image, frame;
     vector<Point2f> points[2];
 
-    //time_t ftime = 
+    auto start_time = std::chrono::high_resolution_clock::now();
     for(;;)
     {
         cap >> frame;
         if( frame.empty() )
             break;
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto time = end_time - start_time;
+        start_time = end_time;
+        long delay_millis = time / std::chrono::milliseconds(1);
+        unsigned int fps = 1000 / (delay_millis + 1);
         flip(frame, frame, 1);
         frame.copyTo(image);
         cvtColor(image, gray, COLOR_BGR2GRAY);
@@ -134,7 +139,7 @@ int main( int argc, char** argv )
                 }
             }
             putText(image, std::string("Tracked features: " + std::to_string(filteredPoints.size())), Point(40, 40), FONT_HERSHEY_PLAIN, 1.5, Scalar(0, 255, 0), 1, LINE_8);
-            //putText(image, std::string("FPS: " + , Point(40, 80), FONT_HERSHEY_PLAIN, 1.5, Scalar(0, 255, 0), 1, LINE_8);
+            putText(image, std::string("FPS: ") + std::to_string(fps), Point(40, 80), FONT_HERSHEY_PLAIN, 1.5, Scalar(0, 255, 0), 1, LINE_8);
 
             if(points[1].size() < MAX_CORNERS) {
                 vector<Point2f> additionalFeatures;
@@ -182,7 +187,7 @@ int main( int argc, char** argv )
         }
 
         needToInit = false;
-        imshow("LK Demo", image);
+        imshow(name, image);
 
         char c = (char)waitKey(10);
         if( c == 27 )
