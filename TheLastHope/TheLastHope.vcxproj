@@ -149,20 +149,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="camera_calibration.cpp" />
-    <ClCompile Include="optical_flow.cpp" />
-    <ClCompile Include="utils.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="out_camera_data.yml" />
-  </ItemGroup>
-  <ItemGroup>
-    <Xml Include="out_camera_data.xml" />
-    <Xml Include="Settings.xml" />
-    <Xml Include="VID5.xml" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="utils.hpp" />
+    <ClCompile Include="lkdemo.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
