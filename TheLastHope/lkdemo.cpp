@@ -6,6 +6,8 @@
 #include <iostream>
 #include <ctype.h>
 
+#define MAX_CORNERS 500
+
 using namespace cv;
 using namespace std;
 
@@ -35,6 +37,30 @@ static void onMouse( int event, int x, int y, int /*flags*/, void* /*param*/ )
     }
 }
 
+
+static void drawArrows(Mat& frame, const vector<Point2f>& prevPts, const vector<Point2f>& nextPts, const vector<uchar> status)
+{
+    for (size_t i = 0; i < prevPts.size(); i++)
+    {
+        if (status[i])
+        {
+            circle(frame, prevPts[i], 2, Scalar(0, 0, 255), 2);
+            arrowedLine(frame, prevPts[i], nextPts[i], Scalar(0, 255, 0), 4);
+        }
+    }
+}
+double quality = 1 / 100.0;
+bool needToInit = true;
+
+static void change_quality(int value, void*)
+{
+    quality = (((double)value) / 100);
+    quality = MAX(quality, 0.01);
+    quality = MIN(quality, 0.99);
+
+    needToInit = true;
+}
+
 int main( int argc, char** argv )
 {
     VideoCapture cap;
@@ -42,8 +68,9 @@ int main( int argc, char** argv )
     Size subPixWinSize(10,10), winSize(31,31);
 
     const int MAX_COUNT = 500;
-    bool needToInit = false;
     bool nightMode = false;
+    double minCornerDist = 10.0;
+    int quality_int = 1;
 
     help();
     cv::CommandLineParser parser(argc, argv, "{@input|0|}");
@@ -60,18 +87,21 @@ int main( int argc, char** argv )
         return 0;
     }
 
-    namedWindow( "LK Demo", 1 );
-    setMouseCallback( "LK Demo", onMouse, 0 );
+    char name[] = "LK Demo";
+    namedWindow( name, 1 );
+    //setMouseCallback( "LK Demo", onMouse, 0 );
+    createTrackbar("Quality", name, &quality_int, 99, change_quality);
 
     Mat gray, prevGray, image, frame;
     vector<Point2f> points[2];
 
+    //time_t ftime = 
     for(;;)
     {
         cap >> frame;
         if( frame.empty() )
             break;
-
+        flip(frame, frame, 1);
         frame.copyTo(image);
         cvtColor(image, gray, COLOR_BGR2GRAY);
 
@@ -93,6 +123,34 @@ int main( int argc, char** argv )
                 gray.copyTo(prevGray);
             calcOpticalFlowPyrLK(prevGray, gray, points[0], points[1], status, err, winSize,
                                  3, termcrit, 0, 0.001);
+
+            drawArrows(image, points[0], points[1], status);
+            vector<Point2f> filteredPoints;
+            for (size_t i = 0; i < points[1].size(); i++)
+            {
+                if (status[i])
+                {
+                    filteredPoints.push_back(points[1][i]);
+                }
+            }
+            putText(image, std::string("Tracked features: " + std::to_string(filteredPoints.size())), Point(40, 40), FONT_HERSHEY_PLAIN, 1.5, Scalar(0, 255, 0), 1, LINE_8);
+            //putText(image, std::string("FPS: " + , Point(40, 80), FONT_HERSHEY_PLAIN, 1.5, Scalar(0, 255, 0), 1, LINE_8);
+
+            if(points[1].size() < MAX_CORNERS) {
+                vector<Point2f> additionalFeatures;
+
+                Mat mask = Mat(gray.size(), CV_8UC1);
+                mask = Scalar(255);
+                for (size_t i = 0; i < points[1].size(); i++) {
+                    circle(mask, points[1][i], (int)minCornerDist / 2, Scalar(0), -1);
+                }
+                goodFeaturesToTrack(gray, additionalFeatures, MAX_CORNERS - points[1].size(), quality, minCornerDist, mask, 3, 3, false, 0.05);
+                if (additionalFeatures.size() > 0) {
+                    cornerSubPix(gray, additionalFeatures, subPixWinSize, Size(-1, -1), termcrit);
+                }
+                points[1].insert(points[1].end(), additionalFeatures.begin(), additionalFeatures.end());
+            }
+
             size_t i, k;
             for( i = k = 0; i < points[1].size(); i++ )
             {
